@@ -1,13 +1,3 @@
-"""
-Статистика использования бота — кто, когда и чем пользовался (скачивание,
-гифки, озвучка), сколько раз в день, и сколько трафика ушло. Хранится в JSON
-рядом с users.json/inline_cache.json — тот же простой паттерн: кэш в памяти
-+ файл на диске, атомарная запись через .tmp, без отдельной БД.
-
-"Скачивание" считается один раз за ссылку (не за штуку медиа) — карусель
-из 20 фото всё равно даёт +1 к счётчику download, как и просили.
-"""
-
 import asyncio
 import json
 import logging
@@ -79,8 +69,6 @@ async def record(
     platform: str | None = None,
     size_bytes: int = 0,
 ) -> None:
-    """Фиксирует одно использование бота.
-    kind: 'download' | 'gif' | 'voice'; source: 'private' | 'inline'."""
     if kind not in KINDS or source not in SOURCES:
         log.warning("stats.record: неизвестный kind=%r/source=%r — пропускаю", kind, source)
         return
@@ -123,7 +111,6 @@ async def record(
 
 
 def summary() -> dict:
-    """Агрегированная статистика для админ-панели."""
     data = _ensure_loaded()
     today = data["daily"].get(_today(), {"counts": {}, "users": []})
     return {
@@ -145,7 +132,6 @@ def user_info(user_id: int) -> dict | None:
 
 
 def list_users() -> list[tuple[int, dict]]:
-    """Все известные юзеры, отсортированные по последней активности (сначала свежие)."""
     data = _ensure_loaded()
     items = [(int(uid), info) for uid, info in data["users"].items()]
     items.sort(key=lambda pair: pair[1].get("last_seen", 0), reverse=True)

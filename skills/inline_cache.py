@@ -1,13 +1,3 @@
-"""
-Кэш для инлайн-режима — сопоставляет ссылку с уже загруженными в Telegram
-file_id (видео/гифки/фото). Когда кто угодно присылает такую же ссылку
-повторно, бот отдаёт готовый file_id мгновенно, без повторного скачивания —
-это даёт бейдж "Cached" в результате, как у @wivio_bot.
-
-Хранится на диске в JSON, как users.json в bot.py — простая база для
-одного процесса, без отдельной БД.
-"""
-
 import asyncio
 import hashlib
 import json
@@ -28,11 +18,6 @@ _builtin_set = set
 
 
 def token_for(url: str) -> str:
-    """Короткий стабильный токен для ссылки — используется в /start
-    deep-link (например, чтобы открыть полную карусель фото в боте,
-    раз Telegram не даёt вставить медиагруппу прямо в инлайн-сообщение).
-    Payload у /start ограничен 64 символами и алфавитом [A-Za-z0-9_-],
-    поэтому саму ссылку туда не засунуть — передаём этот хэш."""
     return hashlib.sha256(url.strip().encode()).hexdigest()[:16]
 
 
@@ -57,8 +42,6 @@ async def _save_to_disk() -> None:
 
 
 def get(url: str) -> dict | None:
-    """Возвращает {'url': str, 'items': [{'kind', 'file_id', 'message_id'}, ...],
-    'title': str, 'ts': float} либо None, если такой ссылки/токена ещё не было в кэше."""
     global _cache
     if _cache is None:
         _cache = _read_from_disk()
@@ -78,9 +61,6 @@ async def set(url: str, items: list[dict], title: str) -> None:
 
 
 def iter_entries() -> list[dict]:
-    """Уникальные записи кэша (каждая лежит на диске под двумя ключами —
-    url и token_for(url), здесь отдаётся одна копия на запись). Нужно для
-    скрипта очистки, который ходит по всем записям и решает, что устарело."""
     global _cache
     if _cache is None:
         _cache = _read_from_disk()
@@ -95,7 +75,6 @@ def iter_entries() -> list[dict]:
 
 
 async def delete(url: str) -> None:
-    """Убирает запись из кэша по обоим ключам (url и его токену)."""
     global _cache
     async with _lock:
         if _cache is None:
@@ -107,9 +86,6 @@ async def delete(url: str) -> None:
 
 
 async def clear_all() -> int:
-    """Полностью стирает кэш — и в памяти, и на диске. Возвращает количество
-    уникальных записей, которые были удалены (см. iter_entries — на диске
-    каждая запись лежит под двумя ключами, здесь считаем по одной на запись)."""
     global _cache
     async with _lock:
         if _cache is None:

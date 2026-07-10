@@ -203,9 +203,10 @@ docker compose up -d --build
 
 ## Куки
 
-Для приватного контента (например, Instagram) положи рядом файл кук в формате
-Netscape `cookies.txt`, укажи его имя в `COOKIES_FILE` и раскомментируй строку
-монтирования в `docker-compose.yml`.
+Для Instagram положи рядом файл кук в формате
+Netscape `cookies.txt`, укажи его имя в `COOKIES_FILE` 
+по умолчанию `COOKIES_FILE=cookies_instagram.txt` 
+
 
 ## Запуск без Docker
 

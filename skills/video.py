@@ -1,14 +1,3 @@
-"""Навык "скачать медиа": видео / фото / фото-карусель / гифка / аудио по ссылке.
-
-Поддержка сайтов — везде, где справляется yt-dlp (YouTube, Instagram, VK Видео,
-Twitter/X, Reddit и сотни других), плюс запасные пути: TikTok (tikwm) и
-Pinterest (внутренний API сайта).
-
-download_media() возвращает четвёрку (video_path, audio_path, photos, gif_path).
-Все файлы кладутся во временную папку; вызывающий код обязан позвать
-cleanup_download() в finally, чтобы снести её целиком.
-"""
-
 import asyncio
 import json
 import logging
@@ -47,7 +36,11 @@ IMAGE_EXTS = ("jpg", "jpeg", "webp", "png", "gif")
 MAX_CAROUSEL_ITEMS = 100
 
 PROXY_URL = os.getenv("PROXY_URL") or None
+PROXY_URL_RU = os.getenv("PROXY_URL_RU") or None
 COOKIES_FILE = os.getenv("COOKIES_FILE") or "cookies_instagram.txt"
+
+_DATA_DIR = Path(os.getenv("DATA_DIR", "."))
+WORKING_COOKIES = _DATA_DIR / "cookies_instagram.working.txt"
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -60,12 +53,6 @@ class VideoDownloadError(Exception):
 
 
 class FileTooLargeError(VideoDownloadError):
-    """Файл превысил лимит размера в текущем качестве.
-
-    available_heights — доступные высоты ниже запрошенной, из которых юзеру
-    предложат выбрать (пусто, если понижать уже некуда).
-    """
-
     def __init__(self, current_height: int, available_heights: list[int]):
         self.current_height = current_height
         self.available_heights = available_heights
@@ -73,10 +60,6 @@ class FileTooLargeError(VideoDownloadError):
 
 
 def cleanup_download(*paths_or_lists) -> None:
-    """Сносит временную папку скачивания целиком по любому из полученных путей.
-
-    Удаляет tmp-директорию (media_dl_*) вместе со всеми файлами и огрызками
-    yt-dlp (.part, .f140 и т.п.), которые поштучный unlink не ловил."""
     for item in paths_or_lists:
         if not item:
             continue
@@ -103,7 +86,41 @@ def _is_instagram(url: str) -> bool:
     return "instagram.com" in urlparse(url).netloc.lower()
 
 
-def _base_opts(tmp_dir: str, max_filesize_mb: int = MAX_FILE_SIZE_MB, use_cookies: bool = False) -> dict:
+def _is_ru_domain(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return host.endswith((".ru", ".su")) or host in ("vk.com",) or host.endswith(".vk.com")
+
+
+def _proxy_for(url: str) -> str | None:
+    if _is_ru_domain(url) and PROXY_URL_RU:
+        return PROXY_URL_RU
+    return PROXY_URL
+
+
+def _current_cookies_source() -> str | None:
+    if WORKING_COOKIES.exists():
+        return str(WORKING_COOKIES)
+    if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+        return COOKIES_FILE
+    return None
+
+
+def _persist_cookies(tmp_cookies: Path) -> None:
+    try:
+        if tmp_cookies.exists():
+            WORKING_COOKIES.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(tmp_cookies, WORKING_COOKIES)
+    except OSError as e:
+        log.warning("Не удалось сохранить обновлённые куки: %s", e)
+
+
+def _base_opts(
+    tmp_dir: str,
+    max_filesize_mb: int = MAX_FILE_SIZE_MB,
+    use_cookies: bool = False,
+    progress_hook=None,
+    proxy_url: str | None = PROXY_URL,
+) -> dict:
     opts = {
         "outtmpl": f"{tmp_dir}/%(autonumber)s.%(ext)s",
         "quiet": True,
@@ -114,15 +131,19 @@ def _base_opts(tmp_dir: str, max_filesize_mb: int = MAX_FILE_SIZE_MB, use_cookie
         "max_filesize": max_filesize_mb * 1024 * 1024,
         "http_headers": {"User-Agent": UA},
     }
-    if PROXY_URL:
-        opts["proxy"] = PROXY_URL
-    if use_cookies and COOKIES_FILE and os.path.exists(COOKIES_FILE):
-        try:
-            cookies_copy = Path(tmp_dir) / "cookies.txt"
-            shutil.copy(COOKIES_FILE, cookies_copy)
-            opts["cookiefile"] = str(cookies_copy)
-        except OSError as e:
-            log.warning("Не удалось скопировать файл кук (%s) — качаю без них", e)
+    if proxy_url:
+        opts["proxy"] = proxy_url
+    if progress_hook:
+        opts["progress_hooks"] = [progress_hook]
+    if use_cookies:
+        source = _current_cookies_source()
+        if source:
+            try:
+                cookies_copy = Path(tmp_dir) / "cookies.txt"
+                shutil.copy(source, cookies_copy)
+                opts["cookiefile"] = str(cookies_copy)
+            except OSError as e:
+                log.warning("Не удалось скопировать файл кук (%s) — качаю без них", e)
     return opts
 
 
@@ -237,34 +258,42 @@ def _download_entries(tmp_dir: str, base_opts: dict, entries: list[dict], max_he
     return video_path, audio_path, (photos or None)
 
 
-def _download_via_ytdlp(url: str, tmp_dir: str, max_height: int | None = None) -> tuple[Path | None, Path | None, list[Path] | None]:
+def _download_via_ytdlp(url: str, tmp_dir: str, max_height: int | None = None, progress_hook=None) -> tuple[Path | None, Path | None, list[Path] | None]:
     hq = bool(max_height) and max_height > MAX_VIDEO_HEIGHT
     max_filesize_mb = MAX_FILE_SIZE_MB_HQ if hq else MAX_FILE_SIZE_MB
-    base_opts = _base_opts(tmp_dir, max_filesize_mb, use_cookies=_is_instagram(url))
+    use_cookies = _is_instagram(url)
+    base_opts = _base_opts(
+        tmp_dir, max_filesize_mb, use_cookies=use_cookies,
+        progress_hook=progress_hook, proxy_url=_proxy_for(url),
+    )
 
-    with yt_dlp.YoutubeDL({**base_opts, "skip_download": True}) as probe:
-        info = probe.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL({**base_opts, "skip_download": True}) as probe:
+            info = probe.extract_info(url, download=False)
 
-    entries = info.get("entries")
-    if entries:
-        return _download_entries(tmp_dir, base_opts, list(entries), max_height)
+        entries = info.get("entries")
+        if entries:
+            return _download_entries(tmp_dir, base_opts, list(entries), max_height)
 
-    if _is_image_only(info):
-        photo = _download_one_photo(url, tmp_dir, base_opts, "photo_0")
-        photos = [photo] if photo else []
-        audio_path = _download_slideshow_audio(url, tmp_dir, base_opts)
-        return None, audio_path, (photos or None)
+        if _is_image_only(info):
+            photo = _download_one_photo(url, tmp_dir, base_opts, "photo_0")
+            photos = [photo] if photo else []
+            audio_path = _download_slideshow_audio(url, tmp_dir, base_opts)
+            return None, audio_path, (photos or None)
 
-    video_path = _download_one_video(url, tmp_dir, base_opts, max_height=max_height)
-    if not video_path:
-        _raise_if_too_large(info, max_filesize_mb, max_height)
-    audio_path = _extract_audio_local(video_path) if video_path else None
-    return video_path, audio_path, None
+        video_path = _download_one_video(url, tmp_dir, base_opts, max_height=max_height)
+        if not video_path:
+            _raise_if_too_large(info, max_filesize_mb, max_height)
+        audio_path = _extract_audio_local(video_path) if video_path else None
+        return video_path, audio_path, None
+    finally:
+        if use_cookies:
+            cookies_copy = Path(tmp_dir) / "cookies.txt"
+            if cookies_copy.exists():
+                _persist_cookies(cookies_copy)
 
 
 def _raise_if_too_large(info: dict, max_filesize_mb: int, max_height: int | None) -> None:
-    """Если у поста есть видео, но yt-dlp ничего не скачал (обычно из-за
-    max_filesize) — сигналим наверх, чтобы предложить выбрать качество ниже."""
     formats = info.get("formats") or []
     if not _has_real_video(formats):
         return
@@ -416,8 +445,7 @@ async def _download_via_pinterest(url: str, tmp_dir: str) -> tuple[Path | None, 
         return None, None, [dest], None
 
 
-async def download_media(url: str, max_height: int | None = None) -> tuple[Path | None, Path | None, list[Path] | None, Path | None]:
-    """TikTok: tikwm -> yt-dlp. Pinterest: yt-dlp -> внутренний API. Остальное: yt-dlp."""
+async def download_media(url: str, max_height: int | None = None, progress_hook=None) -> tuple[Path | None, Path | None, list[Path] | None, Path | None]:
     tmp_dir = tempfile.mkdtemp(prefix=TMP_PREFIX)
     try:
         if _is_tiktok(url):
@@ -428,7 +456,7 @@ async def download_media(url: str, max_height: int | None = None) -> tuple[Path 
             except Exception as e:
                 log.warning("tikwm не справился: %s", e)
             try:
-                video_path, audio_path, photos = await asyncio.to_thread(_download_via_ytdlp, url, tmp_dir, max_height)
+                video_path, audio_path, photos = await asyncio.to_thread(_download_via_ytdlp, url, tmp_dir, max_height, progress_hook)
                 if any((video_path, audio_path, photos)):
                     return video_path, audio_path, photos, None
             except Exception as e:
@@ -437,7 +465,7 @@ async def download_media(url: str, max_height: int | None = None) -> tuple[Path 
 
         if _is_pinterest(url):
             try:
-                video_path, audio_path, photos = await asyncio.to_thread(_download_via_ytdlp, url, tmp_dir, max_height)
+                video_path, audio_path, photos = await asyncio.to_thread(_download_via_ytdlp, url, tmp_dir, max_height, progress_hook)
                 if any((video_path, audio_path)):
                     return video_path, audio_path, None, None
             except Exception as e:
@@ -450,7 +478,7 @@ async def download_media(url: str, max_height: int | None = None) -> tuple[Path 
                 raise VideoDownloadError(f"Не получилось скачать ни через yt-dlp, ни через Pinterest ({e})") from e
 
         try:
-            video_path, audio_path, photos = await asyncio.to_thread(_download_via_ytdlp, url, tmp_dir, max_height)
+            video_path, audio_path, photos = await asyncio.to_thread(_download_via_ytdlp, url, tmp_dir, max_height, progress_hook)
             if any((video_path, audio_path, photos)):
                 return video_path, audio_path, photos, None
         except FileTooLargeError:
