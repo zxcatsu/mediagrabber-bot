@@ -142,11 +142,12 @@ docker compose logs -f bot
 ### Полезные команды
 
 ```bash
-docker compose ps          # статус контейнеров
-docker compose logs -f bot # логи бота (Ctrl+C чтобы выйти)
-docker compose restart bot # перезапустить после правки .env
-docker compose down        # остановить всё
+docker compose ps              # статус контейнеров
+docker compose logs -f bot     # логи бота (Ctrl+C чтобы выйти)
+docker compose restart bot     # перезапустить после правки .env
+docker compose down            # остановить всё
 docker compose up -d --build   # пересобрать и поднять заново
+/checkupdate                   # для проверки обновлений в лс бота
 ```
 
 ## Обновление
@@ -183,7 +184,7 @@ docker compose up -d --build
 | `MAX_FILE_SIZE_MB` | `300` | Лимит размера файла в обычном качестве |
 | `MAX_FILE_SIZE_MB_HQ` | `1500` | Лимит, когда выбрано качество выше дефолтного (макс. 2000 — потолок Telegram) |
 | `MAX_VIDEO_HEIGHT` | `720` | Потолок высоты видео по умолчанию |
-| `VOICE_NAME` | `ru-RU-DmitryNeural` | Голос по умолчанию для озвучки |
+| `PROXY_URL_RU` | — | Прокси для российских сервисов |
 | `PROXY_URL` | — | Прокси для yt-dlp (при блокировках по IP) |
 | `UPDATE_CHECK` | `1` | Уведомлять админов о новых версиях (`0` — выключить) |
 
@@ -203,9 +204,10 @@ docker compose up -d --build
 
 ## Куки
 
-Для приватного контента (например, Instagram) положи рядом файл кук в формате
-Netscape `cookies.txt`, укажи его имя в `COOKIES_FILE` и раскомментируй строку
-монтирования в `docker-compose.yml`.
+Для Instagram положи рядом файл кук в формате
+Netscape `cookies.txt`, укажи его имя в `COOKIES_FILE` 
+по умолчанию `COOKIES_FILE=cookies_instagram.txt` 
+
 
 ## Запуск без Docker
 

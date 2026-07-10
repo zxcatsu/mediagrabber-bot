@@ -45,12 +45,11 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_API_URL = os.getenv("TELEGRAM_API_URL", "http://telegram-bot-api:8081")
 session = AiohttpSession(api=TelegramAPIServer.from_base(TELEGRAM_API_URL, is_local=True))
 bot = Bot(token=TELEGRAM_TOKEN, session=session)
-VOICE_NAME = os.getenv("VOICE_NAME", "ru-RU-DmitryNeural")
 
 LOCAL_API_DIR = Path(os.getenv("LOCAL_API_DIR", "/var/lib/telegram-bot-api"))
 DATA_DIR = Path(os.getenv("DATA_DIR", str(Path(__file__).parent)))
 
-BOT_VERSION = "1.0.0"
+BOT_VERSION = "1.1.0"
 UPDATE_REPO = os.getenv("UPDATE_REPO", "zxcatsu/mediagrabber-bot")
 UPDATE_CHECK = os.getenv("UPDATE_CHECK", "1").strip().lower() not in ("0", "false", "no", "")
 
@@ -85,8 +84,6 @@ _CAROUSEL_SEND_DELAY_SEC = 3
 
 
 async def _call_with_flood_retry(coro_factory, max_retries: int = 5):
-    """Вызывает coro_factory() (без аргументов); если Telegram ответил
-    флуд-контролем — ждёт ровно retry_after и пробует снова."""
     for attempt in range(max_retries):
         try:
             return await coro_factory()
@@ -121,8 +118,6 @@ def _format_bytes(num_bytes: int) -> str:
 
 
 def _sum_sizes(*paths_or_lists) -> int:
-    """Суммарный размер файлов на диске — для учёта потраченного трафика.
-    Принимает как одиночные Path, так и списки Path (например, photos_list)."""
     total = 0
     for item in paths_or_lists:
         if not item:
@@ -157,6 +152,8 @@ def _platform_name(url: str) -> str:
         return "Pinterest"
     if "youtu" in host:
         return "YouTube"
+    if "vk.com" in host or "vkvideo.ru" in host or host.endswith(".vk.com"):
+        return "VK Видео"
     return "Видео"
 
 
@@ -164,8 +161,29 @@ def _is_youtube(url: str) -> bool:
     return "youtu" in urlparse(url).netloc.lower()
 
 
+def _is_vk_video(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return "vk.com" in host or "vkvideo.ru" in host or host.endswith(".vk.com")
+
+
+def _wants_upfront_quality(url: str) -> bool:
+    return _is_youtube(url) or _is_vk_video(url)
+
+_NO_PROGRESS_HOSTS_SUBSTR = ("tiktok", "instagram", "pinterest", "twitter")
+_NO_PROGRESS_HOSTS_EXACT = ("pin.it", "x.com")
+
+
+def _wants_progress_bar(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    if host in _NO_PROGRESS_HOSTS_EXACT:
+        return False
+    if any(host.endswith(f".{h}") for h in _NO_PROGRESS_HOSTS_EXACT):
+        return False
+    return not any(s in host for s in _NO_PROGRESS_HOSTS_SUBSTR)
+
+
 QUALITIES = [("360p", 360), ("480p", 480), ("720p", 720), ("1080p", 1080), ("1440p", 1440), ("2160p", 2160)]
-YOUTUBE_INLINE_HEIGHT = 1080
+INLINE_MAX_HEIGHT = 1080 
 _quality_pending = TTLCache(maxsize=1000, ttl=3600)
 
 
@@ -184,9 +202,6 @@ def _read_users_from_disk() -> set[int]:
 
 
 def load_users() -> set[int]:
-    """Синхронное чтение для мест без async (например, перед стартом рассылки).
-    Использует тот же кэш, что и save_user, поэтому отдаёт актуальные данные
-    с точностью до пользователей, добавленных в последние миллисекунды."""
     global _users_cache
     if _users_cache is None:
         _users_cache = _read_users_from_disk()
@@ -212,8 +227,6 @@ async def save_user(user_id: int) -> None:
 
 
 async def remove_users(user_ids: list[int]) -> None:
-    """Убирает юзеров из базы — используется рассылкой для тех, кто
-    заблокировал бота (TelegramForbiddenError), чтобы не долбить их снова."""
     global _users_cache
     if not user_ids:
         return
@@ -491,8 +504,6 @@ async def admin_broadcast_confirm_cb(callback: CallbackQuery, state: FSMContext)
 
 @dp.message(Command("placeholder"), F.from_user.id.in_(ADMIN_IDS))
 async def cmd_get_placeholder_id(message: Message) -> None:
-    """Разовый хелпер: ответь этой командой на фото, получишь его file_id —
-    его нужно положить в .env как PLACEHOLDER_PHOTO_FILE_ID для инлайн-режима."""
     if not message.reply_to_message or not message.reply_to_message.photo:
         await message.reply("Ответь этой командой на фото — пришлю его file_id.")
         return
@@ -538,6 +549,75 @@ async def _send_full_carousel(message: Message, token: str) -> None:
         chunk = media[start:start + 10]
         await _call_with_flood_retry(lambda c=chunk: message.answer_media_group(media=c))
 
+PROGRESS_EDIT_INTERVAL = 3.0  
+
+
+def _progress_bar(percent: int, width: int = 12) -> str:
+    filled = max(0, min(width, round(width * percent / 100)))
+    return "▓" * filled + "░" * (width - filled)
+
+
+def _fmt_size(n: float | None) -> str:
+    if not n:
+        return ""
+    for unit in ("Б/с", "КБ/с", "МБ/с", "ГБ/с"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} ТБ/с"
+
+
+async def _safe_edit_status(message: Message, text: str) -> None:
+    try:
+        await message.edit_text(text)
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            await message.edit_text(text)
+        except Exception:
+            pass
+    except TelegramBadRequest:
+        pass
+    except Exception:
+        log.debug("Не удалось обновить статус прогресса", exc_info=True)
+
+
+def _make_progress_hook(loop: asyncio.AbstractEventLoop, status_message: Message, label: str = "Качаю"):
+    state = {"last_ts": 0.0, "last_percent": -1}
+
+    def hook(d: dict) -> None:
+        status = d.get("status")
+        if status == "finished":
+            asyncio.run_coroutine_threadsafe(
+                _safe_edit_status(status_message, f"⌛ {label}: обрабатываю файл..."), loop
+            )
+            return
+        if status != "downloading":
+            return
+
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        downloaded = d.get("downloaded_bytes", 0)
+        if not total:
+            return
+        percent = max(0, min(100, int(downloaded * 100 / total)))
+
+        now = time.monotonic()
+        if percent == state["last_percent"] or now - state["last_ts"] < PROGRESS_EDIT_INTERVAL:
+            return
+        state["last_percent"] = percent
+        state["last_ts"] = now
+
+        speed_str = _fmt_size(d.get("speed"))
+        eta = d.get("eta")
+        eta_str = f" · осталось ~{eta}с" if eta else ""
+        extra = f"  {speed_str}" if speed_str else ""
+
+        text = f"⌛ {label}: {percent}%\n{_progress_bar(percent)}{extra}{eta_str}"
+        asyncio.run_coroutine_threadsafe(_safe_edit_status(status_message, text), loop)
+
+    return hook
+
+
 async def _ask_quality(message: Message, url: str, heights: list[int] | None = None, prompt: str = "Выбери качество видео 👇") -> None:
     token = f"{message.chat.id}:{message.message_id}"
     _quality_pending[token] = url
@@ -575,7 +655,12 @@ async def process_quality(callback: CallbackQuery) -> None:
     video_path, audio_path = None, None
 
     try:
-        video_path, audio_path, _photos, _gif = await download_media(url, max_height=height)
+        loop = asyncio.get_running_loop()
+        progress_hook = (
+            _make_progress_hook(loop, callback.message, label=f"Качаю в {quality_label}")
+            if _wants_progress_bar(url) else None
+        )
+        video_path, audio_path, _photos, _gif = await download_media(url, max_height=height, progress_hook=progress_hook)
 
         if not video_path:
             await callback.message.edit_text("Не нашёл видео по этой ссылке 🤷")
@@ -616,7 +701,7 @@ async def handle_url(message: Message) -> None:
 
     url = URL_PATTERN.search(message.text).group(0)
 
-    if _is_youtube(url):
+    if _wants_upfront_quality(url):
         await _ask_quality(message, url)
         return
 
@@ -632,7 +717,9 @@ async def handle_url(message: Message) -> None:
     found_media = False
 
     try:
-        video_path, audio_path, photos_list, gif_path = await download_media(url)
+        loop = asyncio.get_running_loop()
+        progress_hook = _make_progress_hook(loop, status) if _wants_progress_bar(url) else None
+        video_path, audio_path, photos_list, gif_path = await download_media(url, progress_hook=progress_hook)
 
 
         if not gif_path and not video_path and photos_list and len(photos_list) == 1 and audio_path:
@@ -828,12 +915,6 @@ HELP_INLINE_RESULT = InlineQueryResultArticle(
 )
 
 def _make_processing_result() -> InlineQueryResultArticle | InlineQueryResultCachedPhoto:
-    """Заглушка, которая улетает в чат сразу при выборе результата.
-    Telegram отдаёт inline_message_id (без него потом нечего редактировать)
-    ТОЛЬКО если у результата есть прикреплённая инлайн-клавиатура — поэтому
-    добавляем декоративную кнопку, даже если она ничего не делает.
-    Если PLACEHOLDER_PHOTO_FILE_ID не настроен — деградируем до текстовой
-    заглушки (её всё равно не получится заменить на видео)."""
     noop_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏳ Идёт скачивание...", callback_data="noop")]])
 
     return InlineQueryResultCachedPhoto(
@@ -853,7 +934,6 @@ def _error_inline_result(text: str) -> InlineQueryResultArticle:
 
 
 def _inline_results_from_entry(entry: dict, id_prefix: str) -> list:
-    """entry — то, что лежит в inline_cache: {'items': [...], 'title': str}."""
     title = entry["title"]
     results = []
     for i, item in enumerate(entry["items"]):
@@ -868,10 +948,6 @@ def _inline_results_from_entry(entry: dict, id_prefix: str) -> list:
 
 
 async def _build_inline_results(url: str) -> tuple[list[dict], str, int]:
-    """Скачивает медиа по ссылке, заливает в CACHE_CHAT_ID (чтобы получить
-    постоянный file_id), кладёт результат в inline_cache и возвращает
-    (items, title, size_bytes). items — список {'kind': 'video'|'animation'|'photo', 'file_id': str}
-    (для фото-карусели — несколько штук, по одной на слайд)."""
     if CACHE_CHAT_ID is None:
         raise VideoDownloadError("инлайн-режим не настроен (нет CACHE_CHAT_ID в .env)")
 
@@ -880,7 +956,7 @@ async def _build_inline_results(url: str) -> tuple[list[dict], str, int]:
     if cached:
         return cached["items"], cached["title"], 0
 
-    max_height = YOUTUBE_INLINE_HEIGHT if _is_youtube(url) else None
+    max_height = INLINE_MAX_HEIGHT if _wants_upfront_quality(url) else None
     video_path, audio_path, photos_list, gif_path = await download_media(url, max_height)
 
 
@@ -955,9 +1031,6 @@ def _get_or_start_inline_task(url: str) -> asyncio.Task:
 
 
 async def _safe_answer_inline(inline_query: InlineQuery, **kwargs) -> None:
-    """answer() инлайн-запроса может упасть с 'query is too old', если
-    юзер уже закрыл диалог или сеть подвисла — это не баг, тут нечего
-    показывать пользователю, поэтому просто логируем и идём дальше."""
     try:
         await inline_query.answer(**kwargs)
     except TelegramBadRequest as e:
@@ -1010,11 +1083,6 @@ async def handle_inline_query(inline_query: InlineQuery) -> None:
 
 @dp.chosen_inline_result()
 async def handle_chosen_inline_result(chosen: ChosenInlineResult) -> None:
-    """Приходит после того, как юзер тапнул инлайн-результат. Если это была
-    заглушка "качаю" — ждём фоновую задачу и подменяем сообщение на готовое
-    видео/гифку/фото через edit_message_media. Для этого в @BotFather должен
-    быть включён Inline Feedback (/setinlinefeedback → 100%), иначе
-    inline_message_id не приходит и редактировать нечего."""
     if chosen.result_id != "processing":
         return
 
@@ -1151,6 +1219,26 @@ async def _update_watcher() -> None:
                 await _notify_admins_update(tag, release.get("body") or "Список изменений — на странице релиза.")
                 _write_notified(tag)
         await asyncio.sleep(UPDATE_CHECK_INTERVAL_SEC)
+
+
+@dp.message(Command("checkupdate"), F.from_user.id.in_(ADMIN_IDS))
+async def cmd_checkupdate(message: Message) -> None:
+    status = await message.reply("🔎 Проверяю релизы на GitHub...")
+    release = await _fetch_latest_release()
+    if not release:
+        await status.edit_text("Не удалось получить данные с GitHub (см. логи).")
+        return
+
+    tag = release.get("tag_name") or "?"
+    is_newer = _parse_version(tag) > _parse_version(BOT_VERSION)
+
+    if not is_newer:
+        await status.edit_text(f"Обновлений нет. Последний релиз: {tag}, у тебя {BOT_VERSION}.")
+        return
+
+    await status.edit_text(f"Найдена новая версия: {tag} (у тебя {BOT_VERSION}). Отправляю уведомление всем админам...")
+    await _notify_admins_update(tag, release.get("body") or "Список изменений — на странице релиза.")
+    _write_notified(tag)
 
 
 async def main() -> None:
