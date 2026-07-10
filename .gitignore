@@ -1,0 +1,15 @@
+.env
+*.pyc
+__pycache__/
+.venv/
+venv/
+
+# Локальные базы бота (создаются в рантайме)
+users.json
+inline_cache.json
+stats.json
+version_notified.json
+data/
+
+# Куки
+cookies_*.txt

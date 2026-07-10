@@ -1,0 +1,14 @@
+# Что не тащить в образ
+.env
+.git
+.gitignore
+*.pyc
+__pycache__/
+.venv/
+venv/
+users.json
+inline_cache.json
+stats.json
+data/
+cookies_*.txt
+README.md
