@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 import aiohttp
 import yt_dlp
 
+from skills.instagram_ig import InstagramAuthError, download_via_instagrapi
+
 log = logging.getLogger("skills.video")
 
 
@@ -38,7 +40,6 @@ MAX_CAROUSEL_ITEMS = 100
 PROXY_URL = os.getenv("PROXY_URL") or None
 PROXY_URL_RU = os.getenv("PROXY_URL_RU") or None
 COOKIES_FILE = os.getenv("COOKIES_FILE") or "cookies_instagram.txt"
-
 _DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 WORKING_COOKIES = _DATA_DIR / "cookies_instagram.working.txt"
 
@@ -448,6 +449,17 @@ async def _download_via_pinterest(url: str, tmp_dir: str) -> tuple[Path | None, 
 async def download_media(url: str, max_height: int | None = None, progress_hook=None) -> tuple[Path | None, Path | None, list[Path] | None, Path | None]:
     tmp_dir = tempfile.mkdtemp(prefix=TMP_PREFIX)
     try:
+        if _is_instagram(url):
+            try:
+                result = await download_via_instagrapi(url, tmp_dir)
+            except InstagramAuthError as e:
+                raise VideoDownloadError(str(e)) from e
+            except Exception as e:
+                raise VideoDownloadError(f"Не удалось скачать через Instagram API: {e}") from e
+            if any(result[:3]):
+                return result
+            raise VideoDownloadError("Не нашёл медиа по этой ссылке (Instagram)")
+
         if _is_tiktok(url):
             try:
                 video_path, audio_path, photos = await _download_via_tikwm(url, tmp_dir)

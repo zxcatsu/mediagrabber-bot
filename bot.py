@@ -45,11 +45,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_API_URL = os.getenv("TELEGRAM_API_URL", "http://telegram-bot-api:8081")
 session = AiohttpSession(api=TelegramAPIServer.from_base(TELEGRAM_API_URL, is_local=True))
 bot = Bot(token=TELEGRAM_TOKEN, session=session)
+VOICE_NAME = os.getenv("VOICE_NAME", "ru-RU-DmitryNeural")
 
 LOCAL_API_DIR = Path(os.getenv("LOCAL_API_DIR", "/var/lib/telegram-bot-api"))
 DATA_DIR = Path(os.getenv("DATA_DIR", str(Path(__file__).parent)))
 
-BOT_VERSION = "1.1.0"
+BOT_VERSION = "1.2.0"
 UPDATE_REPO = os.getenv("UPDATE_REPO", "zxcatsu/mediagrabber-bot")
 UPDATE_CHECK = os.getenv("UPDATE_CHECK", "1").strip().lower() not in ("0", "false", "no", "")
 
@@ -183,7 +184,7 @@ def _wants_progress_bar(url: str) -> bool:
 
 
 QUALITIES = [("360p", 360), ("480p", 480), ("720p", 720), ("1080p", 1080), ("1440p", 1440), ("2160p", 2160)]
-INLINE_MAX_HEIGHT = 1080 
+INLINE_MAX_HEIGHT = 1080  
 _quality_pending = TTLCache(maxsize=1000, ttl=3600)
 
 
@@ -504,6 +505,8 @@ async def admin_broadcast_confirm_cb(callback: CallbackQuery, state: FSMContext)
 
 @dp.message(Command("placeholder"), F.from_user.id.in_(ADMIN_IDS))
 async def cmd_get_placeholder_id(message: Message) -> None:
+    """Разовый хелпер: ответь этой командой на фото, получишь его file_id —
+    его нужно положить в .env как PLACEHOLDER_PHOTO_FILE_ID для инлайн-режима."""
     if not message.reply_to_message or not message.reply_to_message.photo:
         await message.reply("Ответь этой командой на фото — пришлю его file_id.")
         return
