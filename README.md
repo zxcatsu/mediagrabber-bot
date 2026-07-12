@@ -25,7 +25,7 @@
 - [Быстрый старт (Docker)](#быстрый-старт-docker)
 - [Настройки](#настройки)
 - [Инлайн-режим](#инлайн-режим)
-- [Instagram и сессия](#instagram-и-сессия)
+- [Instagram (cobalt)](#instagram-cobalt)
 - [Запуск без Docker](#запуск-без-docker)
 - [Структура проекта](#структура-проекта)
 - [Лицензия](#лицензия)
@@ -66,10 +66,9 @@
 
 ### Откуда качается медиа
 
-- **Instagram** — через [instagrapi](https://github.com/subzeroid/instagrapi)
-  (эмулирует мобильное приложение, приватный API). Сессия хранится в
-  `DATA_DIR/instagram_session.json` и обновляется сама после каждого
-  использования — держится значительно дольше, чем обычные куки для yt-dlp.
+- **Instagram** — через self-hosted [cobalt](https://github.com/imputnet/cobalt).
+  Без куки, логина и пароля: рядом с ботом поднимается сервис `cobalt-api`,
+  и бот просто отдаёт ему ссылку.
 - **TikTok** — сначала [tikwm](https://www.tikwm.com/), при неудаче — yt-dlp.
 - **Pinterest** — сначала yt-dlp, при неудаче — внутренний API самого Pinterest.
 - **Всё остальное** (YouTube, VK Видео, Twitter/X, Reddit и сотни других сайтов) — yt-dlp.
@@ -197,10 +196,8 @@ docker compose up -d --build
 | `MAX_VIDEO_HEIGHT` | `720` | Потолок высоты видео по умолчанию |
 | `PROXY_URL` | — | Общий прокси для yt-dlp/запросов (при блокировках по IP) |
 | `PROXY_URL_RU` | — | Отдельный прокси для `.ru`-доменов (VK и т.п.) — их CDN часто плохо отдаёт трафик за границу. Если не задан, используется `PROXY_URL` |
-| `PROXY_URL_IG` | — | Отдельный прокси именно для instagrapi (Instagram). Если не задан, используется `PROXY_URL` |
-| `IG_USERNAME=` | - | username для входа в instagram(если куки не работают)
-| `IG_PASSWORD` | - | password для входа в instagram(если куки не работают)
-| `IG_VERIFICATION_CODE` | - | код для 2FA(если куки не работают)
+| `COBALT_API_URL` | `http://cobalt-api:9000/` | Адрес инстанса cobalt для Instagram. Задан в `docker-compose.yml`, менять нужно только если cobalt на другом хосте/порту |
+| `COBALT_API_KEY` | — | Ключ, если твой инстанс cobalt требует авторизацию. Для локального инстанса из `docker-compose.yml` не нужен |
 | `UPDATE_CHECK` | `1` | Уведомлять админов о новых версиях (`0` — выключить) |
 
 ## Инлайн-режим
@@ -217,58 +214,22 @@ docker compose up -d --build
 2. Отправь боту в личку картинку-заглушку, ответь на неё командой `/placeholder`
    и положи полученный `file_id` в `.env` как `PLACEHOLDER_PHOTO_FILE_ID`.
 
-## Instagram и сессия
+## Instagram (cobalt)
 
-Instagram скачивается через instagrapi, а не через куки в yt-dlp — это
-намного устойчивее к банам, потому что instagrapi держит консистентный
-device-fingerprint между запросами, как настоящее мобильное приложение.
+Instagram скачивается через self-hosted [cobalt](https://github.com/imputnet/cobalt) —
+никаких куки, логина, пароля и сессий. Сервис `cobalt-api` уже прописан в
+`docker-compose.yml` и поднимается вместе с ботом; бот ходит к нему по
+внутреннему адресу `http://cobalt-api:9000/`. `docker compose up -d` поднимает
+всё разом — отдельная настройка не нужна.
 
-**Первый запуск (бутстрап):** положи рядом с проектом файл кук и укажи его
-имя в `.env` как `COOKIES_FILE` (по умолчанию
-`COOKIES_FILE=cookies_instagram.txt`). При самом первом instagram-запросе
-бот достанет оттуда `sessionid` и залогинится им один раз. Формат файла
-определяется автоматически по содержимому — поддерживаются:
+Хочешь использовать внешний инстанс cobalt (свой на другом хосте или
+публичный из списка [instances.cobalt.best](https://instances.cobalt.best)) —
+убери сервис `cobalt-api` из `docker-compose.yml` и задай в `.env`:
 
-- **Netscape `cookies.txt`** — классический формат (расширения вроде
-  "Get cookies.txt LOCALLY").
-- **JSON** — как отдают Cookie-Editor, EditThisCookie и подобные:
-  список объектов `[{"name": "sessionid", "value": "..."}, ...]`
-  или плоский словарь `{"sessionid": "...", ...}`.
-
-Расширение файла (`.txt` / `.json`) значения не имеет — главное, чтобы
-`COOKIES_FILE` указывал на правильное имя, и оно было примонтировано в
-`docker-compose.yml`.
-
-**Дальше** сессия живёт сама — хранится в `DATA_DIR/instagram_session.json`
-(том `bot-data`, переживает перезапуски и пересборку) и обновляется после
-каждого использования. Файл кук после бутстрапа больше не нужен, но лучше
-его не удалять — пригодится, если сессию когда-нибудь придётся поднимать
-заново.
-
-**Если сессия всё же протухла** (Instagram запросил challenge, забанил
-IP и т.п.) — положи свежий файл кук (в любом из двух форматов) и снеси
-старую сессию:
-
-Если .txt:
+```env
+COBALT_API_URL=https://твой-инстанс/
+# COBALT_API_KEY=...   # только если инстанс требует ключ
 ```
-yaml# docker-compose.yml
-- ./cookies_instagram.txt:/app/cookies_instagram.txt:ro
-env# .env
-COOKIES_FILE=cookies_instagram.txt
-```
-Если .json:
-```
-yaml# docker-compose.yml
-- ./cookies_instagram.json:/app/cookies_instagram.json:ro
-env# .env
-COOKIES_FILE=cookies_instagram.json
-```
-
-```bash
-docker compose exec bot rm -f /app/data/instagram_session.json
-```
-
-Следующий запрос к Instagram снова забутстрапится с нуля.
 
 ## Запуск без Docker
 
@@ -287,7 +248,7 @@ python bot.py
 ├── bot.py                 # точка входа, хендлеры, админка, инлайн-режим
 ├── skills/
 │   ├── video.py           # скачивание (yt-dlp + tikwm + Pinterest API)
-│   ├── instagram_ig.py    # скачивание Instagram (instagrapi, приватный API)
+│   ├── cobalt.py          # скачивание Instagram через cobalt
 │   ├── photo_video.py     # склейка фото + звук в видео (ffmpeg)
 │   ├── gif.py             # видео → gif (ffmpeg)
 │   ├── voice.py           # озвучка текста (edge-tts)

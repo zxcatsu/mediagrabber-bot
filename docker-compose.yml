@@ -11,22 +11,30 @@ services:
     expose:
       - "8081"
 
+  cobalt-api:
+    image: ghcr.io/imputnet/cobalt:11
+    restart: unless-stopped
+    environment:
+      API_URL: "http://cobalt-api:9000/"
+    expose:
+      - "9000"
+
   bot:
     build: .
     restart: unless-stopped
     depends_on:
       - telegram-bot-api
+      - cobalt-api
     env_file:
       - .env
     environment:
       TELEGRAM_API_URL: http://telegram-bot-api:8081
       LOCAL_API_DIR: /var/lib/telegram-bot-api
       DATA_DIR: /app/data
+      COBALT_API_URL: http://cobalt-api:9000/
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
       - bot-data:/app/data
-      # Раскомментируй, если используешь куки (файл должен существовать):
-      # - ./cookies_instagram.txt:/app/cookies_instagram.txt:ro
 
 volumes:
   telegram-bot-api-data:

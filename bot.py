@@ -50,7 +50,7 @@ VOICE_NAME = os.getenv("VOICE_NAME", "ru-RU-DmitryNeural")
 LOCAL_API_DIR = Path(os.getenv("LOCAL_API_DIR", "/var/lib/telegram-bot-api"))
 DATA_DIR = Path(os.getenv("DATA_DIR", str(Path(__file__).parent)))
 
-BOT_VERSION = "1.2.0"
+BOT_VERSION = "1.3.0"
 UPDATE_REPO = os.getenv("UPDATE_REPO", "zxcatsu/mediagrabber-bot")
 UPDATE_CHECK = os.getenv("UPDATE_CHECK", "1").strip().lower() not in ("0", "false", "no", "")
 

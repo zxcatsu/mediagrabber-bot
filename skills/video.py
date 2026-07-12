@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import aiohttp
 import yt_dlp
 
-from skills.instagram_ig import InstagramAuthError, download_via_instagrapi
+from skills.cobalt import CobaltError, download_via_cobalt
 
 log = logging.getLogger("skills.video")
 
@@ -39,9 +39,6 @@ MAX_CAROUSEL_ITEMS = 100
 
 PROXY_URL = os.getenv("PROXY_URL") or None
 PROXY_URL_RU = os.getenv("PROXY_URL_RU") or None
-COOKIES_FILE = os.getenv("COOKIES_FILE") or "cookies_instagram.txt"
-_DATA_DIR = Path(os.getenv("DATA_DIR", "."))
-WORKING_COOKIES = _DATA_DIR / "cookies_instagram.working.txt"
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -98,27 +95,9 @@ def _proxy_for(url: str) -> str | None:
     return PROXY_URL
 
 
-def _current_cookies_source() -> str | None:
-    if WORKING_COOKIES.exists():
-        return str(WORKING_COOKIES)
-    if COOKIES_FILE and os.path.exists(COOKIES_FILE):
-        return COOKIES_FILE
-    return None
-
-
-def _persist_cookies(tmp_cookies: Path) -> None:
-    try:
-        if tmp_cookies.exists():
-            WORKING_COOKIES.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(tmp_cookies, WORKING_COOKIES)
-    except OSError as e:
-        log.warning("Не удалось сохранить обновлённые куки: %s", e)
-
-
 def _base_opts(
     tmp_dir: str,
     max_filesize_mb: int = MAX_FILE_SIZE_MB,
-    use_cookies: bool = False,
     progress_hook=None,
     proxy_url: str | None = PROXY_URL,
 ) -> dict:
@@ -136,15 +115,6 @@ def _base_opts(
         opts["proxy"] = proxy_url
     if progress_hook:
         opts["progress_hooks"] = [progress_hook]
-    if use_cookies:
-        source = _current_cookies_source()
-        if source:
-            try:
-                cookies_copy = Path(tmp_dir) / "cookies.txt"
-                shutil.copy(source, cookies_copy)
-                opts["cookiefile"] = str(cookies_copy)
-            except OSError as e:
-                log.warning("Не удалось скопировать файл кук (%s) — качаю без них", e)
     return opts
 
 
@@ -262,36 +232,29 @@ def _download_entries(tmp_dir: str, base_opts: dict, entries: list[dict], max_he
 def _download_via_ytdlp(url: str, tmp_dir: str, max_height: int | None = None, progress_hook=None) -> tuple[Path | None, Path | None, list[Path] | None]:
     hq = bool(max_height) and max_height > MAX_VIDEO_HEIGHT
     max_filesize_mb = MAX_FILE_SIZE_MB_HQ if hq else MAX_FILE_SIZE_MB
-    use_cookies = _is_instagram(url)
     base_opts = _base_opts(
-        tmp_dir, max_filesize_mb, use_cookies=use_cookies,
+        tmp_dir, max_filesize_mb,
         progress_hook=progress_hook, proxy_url=_proxy_for(url),
     )
 
-    try:
-        with yt_dlp.YoutubeDL({**base_opts, "skip_download": True}) as probe:
-            info = probe.extract_info(url, download=False)
+    with yt_dlp.YoutubeDL({**base_opts, "skip_download": True}) as probe:
+        info = probe.extract_info(url, download=False)
 
-        entries = info.get("entries")
-        if entries:
-            return _download_entries(tmp_dir, base_opts, list(entries), max_height)
+    entries = info.get("entries")
+    if entries:
+        return _download_entries(tmp_dir, base_opts, list(entries), max_height)
 
-        if _is_image_only(info):
-            photo = _download_one_photo(url, tmp_dir, base_opts, "photo_0")
-            photos = [photo] if photo else []
-            audio_path = _download_slideshow_audio(url, tmp_dir, base_opts)
-            return None, audio_path, (photos or None)
+    if _is_image_only(info):
+        photo = _download_one_photo(url, tmp_dir, base_opts, "photo_0")
+        photos = [photo] if photo else []
+        audio_path = _download_slideshow_audio(url, tmp_dir, base_opts)
+        return None, audio_path, (photos or None)
 
-        video_path = _download_one_video(url, tmp_dir, base_opts, max_height=max_height)
-        if not video_path:
-            _raise_if_too_large(info, max_filesize_mb, max_height)
-        audio_path = _extract_audio_local(video_path) if video_path else None
-        return video_path, audio_path, None
-    finally:
-        if use_cookies:
-            cookies_copy = Path(tmp_dir) / "cookies.txt"
-            if cookies_copy.exists():
-                _persist_cookies(cookies_copy)
+    video_path = _download_one_video(url, tmp_dir, base_opts, max_height=max_height)
+    if not video_path:
+        _raise_if_too_large(info, max_filesize_mb, max_height)
+    audio_path = _extract_audio_local(video_path) if video_path else None
+    return video_path, audio_path, None
 
 
 def _raise_if_too_large(info: dict, max_filesize_mb: int, max_height: int | None) -> None:
@@ -451,11 +414,11 @@ async def download_media(url: str, max_height: int | None = None, progress_hook=
     try:
         if _is_instagram(url):
             try:
-                result = await download_via_instagrapi(url, tmp_dir)
-            except InstagramAuthError as e:
+                result = await download_via_cobalt(url, tmp_dir)
+            except CobaltError as e:
                 raise VideoDownloadError(str(e)) from e
             except Exception as e:
-                raise VideoDownloadError(f"Не удалось скачать через Instagram API: {e}") from e
+                raise VideoDownloadError(f"Не удалось скачать Instagram через cobalt: {e}") from e
             if any(result[:3]):
                 return result
             raise VideoDownloadError("Не нашёл медиа по этой ссылке (Instagram)")
