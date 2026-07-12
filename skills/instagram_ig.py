@@ -5,6 +5,7 @@ dump_settings/load_settings), обновляется после каждого �
 """
 
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -34,6 +35,40 @@ _client_lock = threading.Lock()
 class InstagramAuthError(Exception):
     """Не удалось получить рабочую сессию instagrapi."""
 
+
+def _extract_sessionid_from_json(path: str) -> str | None:
+    """JSON-экспорт куки (Cookie-Editor, EditThisCookie и т.п.) — список
+    объектов вида {"name": "sessionid", "value": "...", ...} либо словарь
+    {"sessionid": "...", ...}."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and item.get("name") == "sessionid":
+                value = item.get("value")
+                if value:
+                    return value
+        return None
+
+    if isinstance(data, dict):
+        # Плоский словарь {"sessionid": "...", "csrftoken": "...", ...}
+        if data.get("sessionid"):
+            return data["sessionid"]
+        # Вложенный формат {"cookies": [...]}
+        cookies = data.get("cookies")
+        if isinstance(cookies, list):
+            for item in cookies:
+                if isinstance(item, dict) and item.get("name") == "sessionid":
+                    value = item.get("value")
+                    if value:
+                        return value
+    return None
+
+
 def _extract_sessionid_from_netscape(path: str) -> str | None:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -43,9 +78,37 @@ def _extract_sessionid_from_netscape(path: str) -> str | None:
                 parts = line.rstrip("\n").split("\t")
                 if len(parts) >= 7 and parts[5] == "sessionid":
                     return parts[6]
-    except OSError as e:
-        log.warning("Не удалось прочитать %s для бутстрапа instagrapi: %s", path, e)
+    except OSError:
+        return None
     return None
+
+
+def _extract_sessionid(path: str) -> str | None:
+    """Достаёт sessionid из файла кук независимо от формата — понимает и
+    JSON (Cookie-Editor/EditThisCookie), и классический Netscape cookies.txt.
+    Формат определяется по содержимому, а не по расширению файла."""
+    if not os.path.exists(path):
+        log.warning("Файл кук для бутстрапа instagrapi не найден: %s", path)
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            head = f.read(2048).lstrip()
+    except OSError as e:
+        log.warning("Не удалось прочитать %s: %s", path, e)
+        return None
+
+    if head.startswith("[") or head.startswith("{"):
+        sessionid = _extract_sessionid_from_json(path)
+        if sessionid:
+            return sessionid
+        log.warning("Файл %s похож на JSON, но sessionid в нём не нашёлся", path)
+        return None
+
+    sessionid = _extract_sessionid_from_netscape(path)
+    if not sessionid:
+        log.warning("Файл %s не в формате Netscape и не в JSON, либо там нет sessionid", path)
+    return sessionid
 
 
 def _dump(cl: Client) -> None:
@@ -70,7 +133,7 @@ def _build_client() -> Client:
         except (LoginRequired, ClientLoginRequired):
             log.warning("Сохранённая сессия instagrapi истекла — пробую перелогиниться по sessionid")
 
-    sessionid = _extract_sessionid_from_netscape(SEED_COOKIES_FILE)
+    sessionid = _extract_sessionid(SEED_COOKIES_FILE)
     if not sessionid:
         raise InstagramAuthError(
             f"Нет рабочей сессии instagrapi и не нашёл sessionid в {SEED_COOKIES_FILE} для бутстрапа. "

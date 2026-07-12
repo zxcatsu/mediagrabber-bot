@@ -220,10 +220,21 @@ Instagram скачивается через instagrapi, а не через ку�
 намного устойчивее к банам, потому что instagrapi держит консистентный
 device-fingerprint между запросами, как настоящее мобильное приложение.
 
-**Первый запуск (бутстрап):** положи рядом с проектом файл кук в формате
-Netscape `cookies.txt`, укажи его имя в `.env` как `COOKIES_FILE`
-(по умолчанию `COOKIES_FILE=cookies_instagram.txt`). При самом первом
-instagram-запросе бот достанет оттуда `sessionid` и залогинится им один раз.
+**Первый запуск (бутстрап):** положи рядом с проектом файл кук и укажи его
+имя в `.env` как `COOKIES_FILE` (по умолчанию
+`COOKIES_FILE=cookies_instagram.txt`). При самом первом instagram-запросе
+бот достанет оттуда `sessionid` и залогинится им один раз. Формат файла
+определяется автоматически по содержимому — поддерживаются:
+
+- **Netscape `cookies.txt`** — классический формат (расширения вроде
+  "Get cookies.txt LOCALLY").
+- **JSON** — как отдают Cookie-Editor, EditThisCookie и подобные:
+  список объектов `[{"name": "sessionid", "value": "..."}, ...]`
+  или плоский словарь `{"sessionid": "...", ...}`.
+
+Расширение файла (`.txt` / `.json`) значения не имеет — главное, чтобы
+`COOKIES_FILE` указывал на правильное имя, и оно было примонтировано в
+`docker-compose.yml`.
 
 **Дальше** сессия живёт сама — хранится в `DATA_DIR/instagram_session.json`
 (том `bot-data`, переживает перезапуски и пересборку) и обновляется после
@@ -232,7 +243,23 @@ instagram-запросе бот достанет оттуда `sessionid` и з�
 заново.
 
 **Если сессия всё же протухла** (Instagram запросил challenge, забанил
-IP и т.п.) — положи свежий `cookies_instagram.txt` и снеси старую сессию:
+IP и т.п.) — положи свежий файл кук (в любом из двух форматов) и снеси
+старую сессию:
+
+Если .txt:
+```
+yaml# docker-compose.yml
+- ./cookies_instagram.txt:/app/cookies_instagram.txt:ro
+env# .env
+COOKIES_FILE=cookies_instagram.txt
+```
+Если .json:
+```
+yaml# docker-compose.yml
+- ./cookies_instagram.json:/app/cookies_instagram.json:ro
+env# .env
+COOKIES_FILE=cookies_instagram.json
+```
 
 ```bash
 docker compose exec bot rm -f /app/data/instagram_session.json
