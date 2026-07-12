@@ -419,8 +419,11 @@ async def download_media(url: str, max_height: int | None = None, progress_hook=
                 raise VideoDownloadError(str(e)) from e
             except Exception as e:
                 raise VideoDownloadError(f"Не удалось скачать Instagram через cobalt: {e}") from e
-            if any(result[:3]):
-                return result
+            video_path, audio_path, photos, gif = result
+            if video_path and not audio_path:
+                audio_path = await asyncio.to_thread(_extract_audio_local, video_path)
+            if any((video_path, audio_path, photos)):
+                return video_path, audio_path, photos, gif
             raise VideoDownloadError("Не нашёл медиа по этой ссылке (Instagram)")
 
         if _is_tiktok(url):

@@ -47,10 +47,15 @@ def _ext_from_url(url: str, default: str) -> str:
     return default
 
 
-def _guess_filename(item: dict, index: int, fallback_ext: str) -> str:
+def _safe_name(name: str, fallback: str) -> str:
+    base = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return base or fallback
+
+
+def _picker_filename(item: dict, index: int, fallback_ext: str) -> str:
     name = item.get("filename")
     if name:
-        return name
+        return f"{index}_{_safe_name(name, f'file{fallback_ext}')}"
     return f"file_{index}{_ext_from_url(item.get('url', ''), fallback_ext)}"
 
 
@@ -84,26 +89,34 @@ async def _fetch_file(session: aiohttp.ClientSession, file_url: str, dest: Path)
     try:
         async with session.get(
             file_url,
-            timeout=aiohttp.ClientTimeout(total=120),
+            timeout=aiohttp.ClientTimeout(total=300, sock_read=60),
             proxy=PROXY_URL,
             headers={"User-Agent": UA},
         ) as r:
             if r.status != 200:
                 return None
-            dest.write_bytes(await r.read())
+            with dest.open("wb") as f:
+                async for chunk in r.content.iter_chunked(1 << 16):
+                    f.write(chunk)
             return dest
     except Exception:
         log.warning("cobalt: не удалось скачать файл %s", file_url)
+        dest.unlink(missing_ok=True)
         return None
 
 
 def _split_media(paths: list[Path]) -> tuple[Path | None, Path | None, list[Path] | None]:
-    video = next((p for p in paths if p.suffix.lower() in VIDEO_EXTS), None)
-    audio = next((p for p in paths if p.suffix.lower() in AUDIO_EXTS), None)
-    photos = [
-        p for p in paths
-        if p.suffix.lower() not in VIDEO_EXTS and p.suffix.lower() not in AUDIO_EXTS
-    ]
+    video: Path | None = None
+    audio: Path | None = None
+    photos: list[Path] = []
+    for p in paths:
+        ext = p.suffix.lower()
+        if ext in VIDEO_EXTS:
+            video = video or p
+        elif ext in AUDIO_EXTS:
+            audio = audio or p
+        else:
+            photos.append(p)
     return video, audio, (photos or None)
 
 
@@ -117,7 +130,9 @@ async def download_via_cobalt(url: str, tmp_dir: str) -> tuple[Path | None, Path
             file_url = payload.get("url")
             if not file_url:
                 raise CobaltError("cobalt не вернул ссылку на файл")
-            filename = payload.get("filename") or f"media{_ext_from_url(file_url, '.mp4')}"
+            default_name = f"media{_ext_from_url(file_url, '.mp4')}"
+            raw_name = payload.get("filename")
+            filename = _safe_name(raw_name, default_name) if raw_name else default_name
             dest = await _fetch_file(session, file_url, tmp / filename)
             if not dest:
                 raise CobaltError("не удалось скачать файл, отданный cobalt")
@@ -136,7 +151,7 @@ async def download_via_cobalt(url: str, tmp_dir: str) -> tuple[Path | None, Path
                     if not item_url:
                         return None
                     fallback = ".mp4" if item.get("type") == "video" else ".jpg"
-                    name = _guess_filename(item, i, fallback)
+                    name = _picker_filename(item, i, fallback)
                     return await _fetch_file(session, item_url, tmp / name)
 
             limited = picker[:MAX_CAROUSEL_ITEMS]
@@ -149,5 +164,11 @@ async def download_via_cobalt(url: str, tmp_dir: str) -> tuple[Path | None, Path
 
             video, picker_audio, photos = _split_media(downloaded)
             return video, (audio_path or picker_audio), photos, None
+
+        if status == "local-processing":
+            raise CobaltError(
+                "cobalt отдал медиа с постобработкой на стороне клиента "
+                "(local-processing) — этот режим бот пока не поддерживает"
+            )
 
         raise CobaltError(f"cobalt вернул статус {status!r}, с которым бот не умеет работать")
