@@ -198,6 +198,9 @@ docker compose up -d --build
 | `PROXY_URL` | — | Общий прокси для yt-dlp/запросов (при блокировках по IP) |
 | `PROXY_URL_RU` | — | Отдельный прокси для `.ru`-доменов (VK и т.п.) — их CDN часто плохо отдаёт трафик за границу. Если не задан, используется `PROXY_URL` |
 | `PROXY_URL_IG` | — | Отдельный прокси именно для instagrapi (Instagram). Если не задан, используется `PROXY_URL` |
+| `IG_USERNAME=` | - | username для входа в instagram(если куки не работают)
+| `IG_PASSWORD` | - | password для входа в instagram(если куки не работают)
+| `IG_VERIFICATION_CODE` | - | код для 2FA(если куки не работают)
 | `UPDATE_CHECK` | `1` | Уведомлять админов о новых версиях (`0` — выключить) |
 
 ## Инлайн-режим

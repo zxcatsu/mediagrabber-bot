@@ -17,6 +17,7 @@ from instagrapi.exceptions import (
     ClientLoginRequired,
     LoginRequired,
     PleaseWaitFewMinutes,
+    TwoFactorRequired,
 )
 
 log = logging.getLogger("skills.instagram_ig")
@@ -25,6 +26,9 @@ _DATA_DIR = Path(os.getenv("DATA_DIR", "."))
 SESSION_FILE = _DATA_DIR / "instagram_session.json"
 SEED_COOKIES_FILE = os.getenv("COOKIES_FILE") or "cookies_instagram.txt"
 IG_PROXY_URL = os.getenv("PROXY_URL_IG") or os.getenv("PROXY_URL") or None
+IG_USERNAME = os.getenv("IG_USERNAME") or None
+IG_PASSWORD = os.getenv("IG_PASSWORD") or None
+IG_VERIFICATION_CODE = os.getenv("IG_VERIFICATION_CODE") or None
 
 VIDEO_EXTS = (".mp4", ".mov", ".m4v")
 
@@ -37,9 +41,6 @@ class InstagramAuthError(Exception):
 
 
 def _extract_sessionid_from_json(path: str) -> str | None:
-    """JSON-экспорт куки (Cookie-Editor, EditThisCookie и т.п.) — список
-    объектов вида {"name": "sessionid", "value": "...", ...} либо словарь
-    {"sessionid": "...", ...}."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -55,10 +56,8 @@ def _extract_sessionid_from_json(path: str) -> str | None:
         return None
 
     if isinstance(data, dict):
-        # Плоский словарь {"sessionid": "...", "csrftoken": "...", ...}
         if data.get("sessionid"):
             return data["sessionid"]
-        # Вложенный формат {"cookies": [...]}
         cookies = data.get("cookies")
         if isinstance(cookies, list):
             for item in cookies:
@@ -84,9 +83,6 @@ def _extract_sessionid_from_netscape(path: str) -> str | None:
 
 
 def _extract_sessionid(path: str) -> str | None:
-    """Достаёт sessionid из файла кук независимо от формата — понимает и
-    JSON (Cookie-Editor/EditThisCookie), и классический Netscape cookies.txt.
-    Формат определяется по содержимому, а не по расширению файла."""
     if not os.path.exists(path):
         log.warning("Файл кук для бутстрапа instagrapi не найден: %s", path)
         return None
@@ -127,18 +123,43 @@ def _build_client() -> Client:
     if SESSION_FILE.exists():
         cl.load_settings(str(SESSION_FILE))
         try:
-            cl.get_timeline_feed()  
+            cl.get_timeline_feed()
             log.info("instagrapi: восстановил сохранённую сессию")
             return cl
         except (LoginRequired, ClientLoginRequired):
-            log.warning("Сохранённая сессия instagrapi истекла — пробую перелогиниться по sessionid")
+            log.warning("Сохранённая сессия instagrapi истекла — пробую бутстрап заново")
+
+    if IG_USERNAME and IG_PASSWORD:
+        try:
+            cl.login(IG_USERNAME, IG_PASSWORD, verification_code=IG_VERIFICATION_CODE or "")
+            log.info("instagrapi: залогинился по логину/паролю (%s), сохраняю сессию", IG_USERNAME)
+            _dump(cl)
+            return cl
+        except TwoFactorRequired as e:
+            raise InstagramAuthError(
+                "На аккаунте включена двухфакторка — на первый логин нужен код. Возьми текущий "
+                "код из приложения-аутентификатора (или SMS) и положи его в .env как "
+                "IG_VERIFICATION_CODE, затем перезапусти бота. После успешного бутстрапа "
+                "переменную можно убрать."
+            ) from e
+        except (ChallengeRequired, PleaseWaitFewMinutes) as e:
+            raise InstagramAuthError(
+                "Instagram запросил подтверждение (challenge) или временно ограничил вход при "
+                "логине по паролю. Зайди на аккаунт вручную через приложение/сайт, подтверди "
+                "личность, подожди немного и попробуй снова."
+            ) from e
 
     sessionid = _extract_sessionid(SEED_COOKIES_FILE)
     if not sessionid:
         raise InstagramAuthError(
-            f"Нет рабочей сессии instagrapi и не нашёл sessionid в {SEED_COOKIES_FILE} для бутстрапа. "
-            "Положи туда свежий Netscape cookies.txt с валидным sessionid и попробуй снова."
+            f"Нет рабочей сессии instagrapi, не заданы IG_USERNAME/IG_PASSWORD и не нашёл "
+            f"sessionid в {SEED_COOKIES_FILE} для бутстрапа."
         )
+    log.warning(
+        "instagrapi: бутстрап по sessionid из %s — если он снят из браузера, "
+        "Instagram, скорее всего, тут же отклонит его (login_required). "
+        "Надёжнее задать IG_USERNAME/IG_PASSWORD.", SEED_COOKIES_FILE
+    )
     cl.login_by_sessionid(sessionid)
     log.info("instagrapi: залогинился по sessionid из %s, сохраняю сессию", SEED_COOKIES_FILE)
     _dump(cl)
